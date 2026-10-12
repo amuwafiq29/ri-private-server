@@ -475,7 +475,16 @@ def handle_game_packet(cmd, payload, sess):
     elif cmd == 11077:  # hero per grid
         uid = sess.get("uid", "player1")
         reply(11077, {"grid_id": int(data.get("grid_id") or 0), "hero_list": get_heroes(uid)})
+    elif cmd == 11004:  # dungeon harian: type harus echo (config client keyed by type)
+        reply(11004, {"type": int(data.get("type") or 1), "dungeon_list": [],
+                      "his_list": [], "enter_count": 99, "buy_count": 0,
+                      "total_buy_count": 99, "today_pass": 0,
+                      "max_pass_dungoen_id": 0})
     elif cmd == 12260:  # transform list
+        uid = sess.get("uid", "player1")
+        heroes = get_heroes(uid)
+        reply(12260, {"transform_list": [{"base_id": h["base_id"], "star": h["star"],
+                                          "skin_active": 0, "hero_id": h["id"]} for h in heroes]})
         uid = sess.get("uid", "player1")
         heroes = get_heroes(uid)
         reply(12260, {"transform_list": [{"base_id": h["base_id"], "star": h["star"],
@@ -504,13 +513,21 @@ def handle_game_packet(cmd, payload, sess):
         rschema = PROTO_RECV.get(cmd)
         if rschema is not None:
             obj = zero_obj(rschema)
+            req = data if isinstance(data, dict) else {}
             for f in rschema:
                 if f["name"] in SUCCESS_FIELDS and f["type"] in ("int8", "uint8", "int16", "uint16", "int32", "uint32"):
                     obj[f["name"]] = 1
+                elif f["name"] in req and not isinstance(req[f["name"]], (dict, list)):
+                    try:  # echo field request -> balasan (id/type/grid/dll)
+                        obj[f["name"]] = type(obj[f["name"]])(req[f["name"]])
+                    except Exception:
+                        pass
             if "now" in obj:
                 obj["now"] = now
             if "timestamp" in obj:
                 obj["timestamp"] = now
+            if "open_time" in obj and not obj["open_time"]:
+                obj["open_time"] = now
             out.append(game_frame(cmd, proto_encode(rschema, obj)))
             print(f"[GAME] C{cmd}: balasan generik (auto-nol)")
         else:
