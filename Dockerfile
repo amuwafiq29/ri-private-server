@@ -1,6 +1,6 @@
 FROM python:3.13-slim
 WORKDIR /app
-COPY server.py config.json ./
+COPY server.py config.json proto_send.json proto_recv.json ./
 ENV PORT=8080 WS_PORT=29601 WS_PUBLIC_PORT=29601 DATA_DIR=/data PUBLIC_SCHEME=https
 VOLUME /data
 EXPOSE 8080 29601
