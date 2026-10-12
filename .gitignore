@@ -7,3 +7,5 @@ __pycache__/
 *.xapk
 patched_client/
 ri-data/
+# kunci signing debug — JANGAN push
+*.pem
