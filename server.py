@@ -271,12 +271,14 @@ def handle_game_packet(cmd, payload, sess):
         schema = PROTO_RECV.get(rcmd, [])
         full = zero_obj(schema)
         full.update({k: v for k, v in obj.items() if k in full})
-        out.append(game_frame(rcmd, proto_encode(schema, full)))
+        pkt = game_frame(rcmd, proto_encode(schema, full))
+        print(f"[GAME] -> R{rcmd} len={len(pkt)} hex={pkt[:48].hex()}")
+        out.append(pkt)
     try:
         schema = PROTO_SEND.get(cmd)
         data = proto_decode(schema, payload) if schema else {"_raw": payload[:64].hex()}
     except Exception as e:
-        print(f"[GAME] cmd {cmd}: decode gagal: {e}")
+        print(f"[GAME] cmd {cmd}: decode gagal: {e} hex={payload[:96].hex()}")
         return out
     brief = {k: (str(v)[:40]) for k, v in data.items() if not k.startswith("_")}
     print(f"[GAME] C{cmd} {brief}")
@@ -571,6 +573,8 @@ def handle_ws_message(conn, data, op, addr, sess, buf):
     if op != 0x2:  # bukan biner/data: abaikan (ping/pong/close ditangani pemanggil)
         return
     buf += data
+    if op == 0x2 and len(buf) < 200:
+        print(f"[WS {addr}] biner {len(data)}B hex={data[:96].hex()}")
     while len(buf) >= 6:
         total, cmd = struct.unpack("<IH", buf[:6])
         if total < 2 or total > 10 * 1024 * 1024:
