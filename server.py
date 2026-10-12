@@ -141,7 +141,12 @@ class H(BaseHTTPRequestHandler):
             acc = get_or_create(uid)
             c = db(); c.execute("INSERT INTO shop_log(uid,shop_id,count,price,ts) VALUES(?,?,?,?,?)", (uid, shop, cnt, 0, int(time.time()))); c.commit(); c.close()
             return self._send(200, {"ok": True, "msg": "beli GRATIS sukses", "uid": uid, "shop_id": shop, "count": cnt, "price": 0, "jade": acc["jade"]})
-        if p.startswith("/resource/"):
+        if p.startswith("/resource/") or p == "/version.manifest":
+            # version.manifest selalu dijawab versi lokal (1.0.81) supaya client
+            # tidak menganggap ada update (resmi sudah 1.0.89).
+            if p.rsplit("/", 1)[-1] == "version.manifest":
+                return self._send(200, {"version": "1.0.81", "tasteVersion": "1.0.81",
+                                        "baseVersion": "1.0.81"})
             # proxy CDN resmi supaya client patch tidak perlu hosting 400MB
             target = OFFICIAL_CDN + p[len("/resource/"):]
             try:
@@ -232,6 +237,16 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"success": 1, "code": 1, "error_msg": "",
                 "message": {"server_list": [srv], "recom_server": srv, "new_server": srv,
                             "notice": "Private server: semua GRATIS, jade unlimited."}})
+        if "get_ver_first" in p:
+            # versi disamakan dengan bawaan APK (1.0.81) supaya tidak ada update.
+            return self._send(200, {"success": 1, "code": 1, "version": "1.19",
+                "res_ver": "1.0.81", "res_ver_trial": "1.0.81"})
+        if "get_ver" in p:
+            return self._send(200, {"success": 1, "code": 1, "version": "1.0.81",
+                "taste_version": "1.0.81", "taste_patch_time": "",
+                "package_version": "1.0.81", "patch_time": "",
+                "res_channelids": [], "scsm_channelids": [], "akfb_channelids": [],
+                "mpay_channelids": [], "ad_channelids": [], "display_mini_game": 0})
         if "web_login_check" in p:
             return self._send(200, {"code": 1, "success": 1,
                 "message": {"account": account, "token": acc["token"], "uid": account,

@@ -79,6 +79,14 @@ def main():
     sisa = sum(open(mainjs, "rb").read().count(u.encode()) for u in OFFICIAL_APIS)
     print(f"  sisa URL resmi: {sisa}")
     assert sisa == 0, "patch gagal!"
+    # matikan dialog "Need to switch resource server" (checkSwitchGameURL -> false)
+    import re as _re
+    raw = open(mainjs, "rb").read().decode("utf-8", errors="ignore")
+    pat = _re.compile(r'prototype\.checkSwitchGameURL=function\(t,e,i\)\{.*?return!1\}')
+    new_raw, cnt = pat.subn('prototype.checkSwitchGameURL=function(t,e,i){return!1}', raw, count=1)
+    assert cnt == 1, "patch checkSwitchGameURL gagal!"
+    open(mainjs, "wb").write(new_raw.encode())
+    print("  checkSwitchGameURL dimatikan OK")
     # zip ulang asset pack (isi berubah, signature lama invalid -> sign ulang semua di bawah)
     if os.path.exists(pack_apk):
         os.remove(pack_apk)
