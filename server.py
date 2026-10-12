@@ -42,6 +42,15 @@ VIP_NEW = int(CFG.get("vip_level_new_account", 15))
 
 OFFICIAL_API = CFG.get("official_api", "https://xnh5api.51haodong.com")
 OFFICIAL_CDN = CFG.get("official_cdn", "https://xnh5cdn.51haodong.com/en/resource/")
+RESOURCE_DIR = os.environ.get("RESOURCE_DIR", os.path.join(DATA_DIR, "game_resource"))
+
+_MIME = {".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg",
+         ".jpeg": "image/jpeg", ".dbbin": "application/octet-stream",
+         ".fnt": "text/plain", ".ogg": "audio/ogg", ".m4a": "audio/mp4",
+         ".mp3": "audio/mpeg", ".txt": "text/plain", ".sk": "application/octet-stream"}
+
+def mime_for(name):
+    return _MIME.get(os.path.splitext(name)[1].lower(), "application/octet-stream")
 
 # ---------------- DB ----------------
 def db():
@@ -58,7 +67,93 @@ def db():
     c.execute("""CREATE TABLE IF NOT EXISTS roles(
       uid TEXT PRIMARY KEY, rid INTEGER, name TEXT, career INTEGER,
       sex INTEGER, lev INTEGER, reg_time INTEGER)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS heroes(
+      uid TEXT, hid INTEGER, base_id INTEGER, lev INTEGER, star INTEGER,
+      PRIMARY KEY (uid, hid))""")
+    c.execute("""CREATE TABLE IF NOT EXISTS items(
+      uid TEXT, iid INTEGER, pos INTEGER, base_id INTEGER, bind INTEGER,
+      quantity INTEGER, lev INTEGER, color INTEGER,
+      PRIMARY KEY (uid, iid))""")
+    c.execute("""CREATE TABLE IF NOT EXISTS mails(
+      uid TEXT, mid INTEGER, subject TEXT, content TEXT, status INTEGER,
+      items_json TEXT, PRIMARY KEY (uid, mid))""")
+    c.execute("""CREATE TABLE IF NOT EXISTS formations(
+      uid TEXT PRIMARY KEY, data_json TEXT)""")
     return c
+
+# Starter Team resmi (hero_data group 13 key 1) + item_data base_id asli
+STARTER_HEROES = [
+    (104070, "Teng Huayuan", 1, 1, 5),
+    (204030, "Zhou Yi", 2, 1, 5),
+    (204070, "Feng Luan", 2, 1, 5),
+    (104020, "Six Desires", 1, 4, 5),
+    (204060, "Zhou Yun", 2, 2, 5),
+    (204050, "Mo Zhi", 2, 3, 5),
+]
+STARTER_ITEMS = [  # (base_id, quantity, color)
+    (1, 1000, 3), (4, 1000, 3), (1000050, 100, 4), (1000080, 20, 4),
+]
+WELCOME_GIFT = [(1000080, 10), (1000050, 50)]
+
+def get_heroes(uid):
+    c = db()
+    rows = c.execute("SELECT hid,base_id,lev,star FROM heroes WHERE uid=? ORDER BY hid", (uid,)).fetchall()
+    c.close()
+    names = {b: n for b, n, _, _, _ in STARTER_HEROES}
+    out = []
+    for hid, base, lev, star in rows:
+        info = next((h for h in STARTER_HEROES if h[0] == base), (base, f"Hero-{base}", 1, 1, star))
+        out.append({"id": hid, "base_id": base, "realm": info[2], "career": info[3],
+                    "name": info[1], "lev": lev, "stage": 0, "star": star,
+                    "fc": 5000, "hp": 8000, "hp_max": 8000, "skin_id": 0, "wake_lev": 0})
+    return out
+
+def get_bag(uid):
+    c = db()
+    rows = c.execute("SELECT iid,pos,base_id,bind,quantity,lev,color FROM items WHERE uid=? ORDER BY pos", (uid,)).fetchall()
+    c.close()
+    return [{"id": r[0], "old_id": 0, "pos": r[1], "base_id": r[2], "bind": r[3],
+             "quantity": r[4], "lev": r[5], "color": r[6], "exattr": [], "attr": []} for r in rows]
+
+def bag_add(uid, base_id, quantity, bind=1, color=3):
+    c = db()
+    r = c.execute("SELECT iid,quantity,pos FROM items WHERE uid=? AND base_id=? AND bind=?",
+                  (uid, base_id, bind)).fetchone()
+    if r:
+        c.execute("UPDATE items SET quantity=quantity+? WHERE uid=? AND iid=?", (quantity, uid, r[0]))
+        iid, pos = r[0], r[2]
+    else:
+        mx = c.execute("SELECT max(iid),max(pos) FROM items WHERE uid=?", (uid,)).fetchone()
+        iid, pos = (mx[0] or 0) + 1, (mx[1] or 0) + 1
+        c.execute("INSERT INTO items(uid,iid,pos,base_id,bind,quantity,lev,color) VALUES(?,?,?,?,?,?,?,?)",
+                  (uid, iid, pos, base_id, bind, quantity, 1, color))
+    c.commit()
+    c.close()
+    return {"id": iid, "pos": pos, "base_id": base_id, "bind": bind,
+            "quantity": (r[1] + quantity) if r else quantity, "lev": 1, "color": color,
+            "exattr": [], "attr": []}
+
+def grant_starter(uid):
+    c = db()
+    has = c.execute("SELECT count(*) FROM heroes WHERE uid=?", (uid,)).fetchone()[0]
+    if has:
+        c.close()
+        return False
+    for i, (base, _n, _r, _c, star) in enumerate(STARTER_HEROES, start=1):
+        c.execute("INSERT INTO heroes(uid,hid,base_id,lev,star) VALUES(?,?,?,?,?)",
+                  (uid, i, base, 1, star))
+    for pos, (base, qty, color) in enumerate(STARTER_ITEMS, start=1):
+        c.execute("INSERT INTO items(uid,iid,pos,base_id,bind,quantity,lev,color) VALUES(?,?,?,?,?,?,?,?)",
+                  (uid, pos, pos, base, 1, qty, 1, color))
+    c.execute("INSERT OR IGNORE INTO mails(uid,mid,subject,content,status,items_json) VALUES(?,?,?,?,?,?)",
+              (uid, 1, "Welcome to GRATIS-1",
+               "Welcome, Cultivator! Everything here is FREE: shop, top-up, summons. Claim the gift below and enjoy unlimited jade!",
+               0, json.dumps([{"base_id": b, "bind": 1, "quantity": q, "exattr": []} for b, q in WELCOME_GIFT])))
+    c.execute("INSERT OR IGNORE INTO formations(uid,data_json) VALUES(?,?)",
+              (uid, json.dumps([{"type": 0, "pos_list": [{"pos": i, "id": i} for i in range(1, 7)], "counter_id": 0}])))
+    c.commit()
+    c.close()
+    return True
 
 def get_or_create(uid, token=""):
     c = db()
@@ -309,7 +404,12 @@ def handle_game_packet(cmd, payload, sess):
     elif cmd == 10006:  # masuk game
         reply(10006, {"code": 1, "msg": "", "timestamp": now, "world_lev": 1, "evolve_flag": 0})
         uid = sess.get("uid", "player1")
+        grant_starter(uid)
         reply(12011, role_info_obj(uid))  # info role + jade unlimited
+        heroes = get_heroes(uid)
+        reply(11076, {"hero_list": heroes, "select_hero_id": heroes[0]["id"] if heroes else 0})
+        reply(12260, {"transform_list": [{"base_id": h["base_id"], "star": h["star"],
+                                          "skin_active": 0, "hero_id": h["id"]} for h in heroes]})
     elif cmd == 10007:  # re-enter
         reply(10007, {"code": 1, "msg": "", "timestamp": now, "world_lev": 1, "evolve_flag": 0})
     elif cmd == 10008:
@@ -318,6 +418,88 @@ def handle_game_packet(cmd, payload, sess):
         reply(10010, {"now": now})
     elif cmd == 10012:
         reply(10012, {"now": now, "open_time": now})
+    elif cmd == 17000:  # tas
+        uid = sess.get("uid", "player1")
+        reply(17000, {"storagetype": int(data.get("storagetype") or 0),
+                      "volume": 500, "items": get_bag(uid)})
+    elif cmd == 16000:  # mail list
+        uid = sess.get("uid", "player1")
+        c = db()
+        rows = c.execute("SELECT mid,subject,content,status,items_json FROM mails WHERE uid=? ORDER BY mid", (uid,)).fetchall()
+        c.close()
+        mails = []
+        for mid, subj, cont, st, ijs in rows:
+            try:
+                items = json.loads(ijs or "[]")
+            except Exception:
+                items = []
+            mails.append({"id": mid, "send_time": now - 60, "from_rid": 0,
+                          "from_name": "GRATIS-1", "to_rid": 0, "to_name": "",
+                          "status": st, "subject": subj, "content": cont,
+                          "assets": [], "items": items})
+        reply(16000, {"sign": 1, "mails": mails})
+    elif cmd == 16001:  # baca mail
+        uid = sess.get("uid", "player1")
+        ids = [int(x["id"]) for x in (data.get("ids") or [])]
+        if ids:
+            c = db()
+            c.execute(f"UPDATE mails SET status=1 WHERE uid=? AND mid IN ({','.join('?'*len(ids))})",
+                      [uid] + ids)
+            c.commit()
+            c.close()
+        reply(16001, {"code": 1})
+    elif cmd == 16002:  # klaim mail
+        uid = sess.get("uid", "player1")
+        ids = [int(x["id"]) for x in (data.get("ids") or [])]
+        gained = []
+        c = db()
+        for (mid,) in [(i,) for i in ids]:
+            r = c.execute("SELECT status,items_json FROM mails WHERE uid=? AND mid=?", (uid, mid)).fetchone()
+            if r and r[0] != 2:
+                try:
+                    items = json.loads(r[1] or "[]")
+                except Exception:
+                    items = []
+                for it in items:
+                    gained.append(bag_add(uid, int(it.get("base_id", 0)),
+                                          int(it.get("quantity", 0)), int(it.get("bind", 1))))
+                c.execute("UPDATE mails SET status=2 WHERE uid=? AND mid=?", (uid, mid))
+        c.commit()
+        c.close()
+        reply(16002, {"code": 1})
+        if gained:
+            reply(17001, {"notice": 1, "storagetype": 0, "items": gained})
+    elif cmd == 11046:  # daftar hero
+        uid = sess.get("uid", "player1")
+        reply(11046, {"type": int(data.get("type") or 0), "hero_list": get_heroes(uid)})
+    elif cmd == 11077:  # hero per grid
+        uid = sess.get("uid", "player1")
+        reply(11077, {"grid_id": int(data.get("grid_id") or 0), "hero_list": get_heroes(uid)})
+    elif cmd == 12260:  # transform list
+        uid = sess.get("uid", "player1")
+        heroes = get_heroes(uid)
+        reply(12260, {"transform_list": [{"base_id": h["base_id"], "star": h["star"],
+                                          "skin_active": 0, "hero_id": h["id"]} for h in heroes]})
+    elif cmd == 32804:  # load formasi
+        uid = sess.get("uid", "player1")
+        c = db()
+        r = c.execute("SELECT data_json FROM formations WHERE uid=?", (uid,)).fetchone()
+        c.close()
+        try:
+            fl = json.loads(r[0]) if r else []
+        except Exception:
+            fl = []
+        reply(32804, {"formation_list": fl})
+    elif cmd == 32803:  # simpan formasi
+        uid = sess.get("uid", "player1")
+        fl = data.get("formation_list") or []
+        c = db()
+        c.execute("INSERT OR REPLACE INTO formations(uid,data_json) VALUES(?,?)",
+                  (uid, json.dumps(fl)))
+        c.commit()
+        c.close()
+        reply(32803, {"res": 1, "msg": "", "action": int(data.get("action") or 0),
+                      "my_signup": 0, "formation_list": fl})
     else:
         rschema = PROTO_RECV.get(cmd)
         if rschema is not None:
@@ -350,6 +532,9 @@ GM_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>RI Private 
 <div class="card"><h3>4) Beli shop gratis (simulasi)</h3>
 <input id="uid3" placeholder="uid" size="30"><input id="shop" placeholder="shop id" value="1001" size="12"><input id="cnt" placeholder="count" value="99" size="8">
 <button onclick="fetch('/gm/buy?uid='+encodeURIComponent(uid3.value)+'&shop_id='+encodeURIComponent(shop.value)+'&count='+encodeURIComponent(cnt.value)).then(r=>r.text()).then(t=>alert(t))">Beli GRATIS</button></div>
+<div class="card"><h3>5) Set level role (buka fitur terkunci level)</h3>
+<input id="uid4" placeholder="uid" size="30"><input id="lev" placeholder="level" value="55" size="8">
+<button onclick="fetch('/gm/set_level?uid='+encodeURIComponent(uid4.value)+'&lev='+encodeURIComponent(lev.value)).then(r=>r.text()).then(t=>alert(t))">Set Level</button></div>
 <p>Status: <a href="/status">/status</a> | Server list: <a href="/Client/server_list">/Client/server_list</a></p>
 </body></html>"""
 
@@ -399,14 +584,38 @@ class H(BaseHTTPRequestHandler):
             acc = get_or_create(uid)
             c = db(); c.execute("INSERT INTO shop_log(uid,shop_id,count,price,ts) VALUES(?,?,?,?,?)", (uid, shop, cnt, 0, int(time.time()))); c.commit(); c.close()
             return self._send(200, {"ok": True, "msg": "beli GRATIS sukses", "uid": uid, "shop_id": shop, "count": cnt, "price": 0, "jade": acc["jade"]})
+        if p == "/gm/set_level":
+            uid = q.get("uid", ["player1"])[0]; lev = int(q.get("lev", ["50"])[0])
+            r = get_role(uid)
+            if not r:
+                return self._send(200, {"ok": False, "err": "role belum ada (masuk game dulu)"})
+            c = db(); c.execute("UPDATE roles SET lev=? WHERE uid=?", (lev, uid)); c.commit(); c.close()
+            return self._send(200, {"ok": True, "uid": uid, "lev": lev,
+                "note": "relogin / reconnect agar level baru tampil"})
         if p.startswith("/resource/") or p == "/version.manifest":
             # version.manifest selalu dijawab versi lokal (1.0.81) supaya client
             # tidak menganggap ada update (resmi sudah 1.0.89).
             if p.rsplit("/", 1)[-1] == "version.manifest":
                 return self._send(200, {"version": "1.0.81", "tasteVersion": "1.0.81",
                                         "baseVersion": "1.0.81"})
+            # Serve lokal dulu (file 1.0.81 persis dari XAPK, taruh di $RESOURCE_DIR),
+            # kalau tidak ada baru proxy ke CDN resmi. Ini yang bikin scene hitam
+            # kalau CDN resmi sudah beda versi (404) — semua kegagalan dicatat.
+            rel = p[len("/resource/"):]
+            local = os.path.join(RESOURCE_DIR, rel)
+            if os.path.isfile(local):
+                with open(local, "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Content-Type", mime_for(rel))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                try: self.wfile.write(data)
+                except Exception: pass
+                return
             # proxy CDN resmi supaya client patch tidak perlu hosting 400MB
-            target = OFFICIAL_CDN + p[len("/resource/"):]
+            target = OFFICIAL_CDN + rel
             try:
                 req = urllib.request.Request(target, headers={"User-Agent": "RI-Private"})
                 with urllib.request.urlopen(req, timeout=20) as r:
@@ -418,6 +627,7 @@ class H(BaseHTTPRequestHandler):
                 except Exception: pass
                 return
             except Exception as e:
+                print(f"[CDN-FAIL] {p} -> {target} : {e}")
                 return self._send(502, {"ok": False, "err": f"cdn proxy gagal: {e}"})
         if p.startswith("/Client/"):
             return self._handle_client(p, q, b"")
