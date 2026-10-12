@@ -81,7 +81,7 @@ def add_jade(uid, amount):
 GM_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>RI Private Server - GM Panel</title>
 <style>body{font-family:Consolas,monospace;background:#0d1117;color:#e6edf3;padding:24px}input,button{padding:8px;margin:4px;background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:6px}button{cursor:pointer}.card{border:1px solid #30363d;border-radius:10px;padding:16px;margin:12px 0;background:#161b22}a{color:#58a6ff}</style></head><body>
 <h2>Renegade Immortal Private Server — GM Panel</h2>
-<p>Server: <b>PRIVATE-GRATIS-1</b> | Shop: <b>GRATIS</b> | Topup: <b>GRATIS</b> | Jade akun baru: <b>999999999</b></p>
+<p>Server: <b>GRATIS-1</b> | Shop: <b>GRATIS</b> | Topup: <b>GRATIS</b> | Jade akun baru: <b>999999999</b></p>
 <div class="card"><h3>1) Tambah Jade</h3>
 <input id="uid" placeholder="uid / nama akun" size="30"><input id="amt" placeholder="jumlah" value="999999999" size="15">
 <button onclick="fetch('/gm/add_jade?uid='+encodeURIComponent(uid.value)+'&amount='+encodeURIComponent(amt.value)).then(r=>r.text()).then(t=>alert(t))">Kirim Jade</button></div>
@@ -231,8 +231,9 @@ class H(BaseHTTPRequestHandler):
             srv = {"socket": HOST, "ip": HOST, "host": HOST,
                    "port": WS_PUBLIC_PORT, "port2": WS_PUBLIC_PORT, "status": 1, "open_time": 0,
                    "recomed": 1, "isnew": 1, "is_maintain": 0, "zone_id": CFG.get("server_zone_id", 1),
-                   "zone_name": CFG.get("server_name", "PRIVATE-GRATIS-1"),
+                   "zone_name": CFG.get("server_name", "GRATIS-1"),
                    "platform": "private", "roles": [],
+                   "is_wss": 0,
                    "ws_url": f"{'wss' if PUBLIC_SCHEME == 'https' else 'ws'}://{HOST}/ws"}
             return self._send(200, {"success": 1, "code": 1, "error_msg": "",
                 "message": {"server_list": [srv], "recom_server": srv, "new_server": srv,

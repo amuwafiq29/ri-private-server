@@ -16,7 +16,7 @@
   "official_cdn": "https://xnh5cdn.51haodong.com/en/resource/",
   "local_resource_prefix": "/resource/",
   "db_file": "ri.db",
-  "server_name": "PRIVATE-GRATIS-1",
+  "server_name": "GRATIS-1",
   "server_zone_id": 1,
   "note_env": "Di VPS/Coolify set env: PUBLIC_HOST=domain-vps-kamu, PUBLIC_SCHEME=https, PORT=8080, WS_PORT=29601, DATA_DIR=/data"
 }
