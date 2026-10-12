@@ -1,0 +1,22 @@
+{
+  "game": "Renegade Immortal 1.19 (com.renegadeImmortal.and)",
+  "engine": "Egret H5",
+  "http_port": 8080,
+  "ws_port": 29601,
+  "host": "127.0.0.1",
+  "mode": "hybrid",
+  "jade_new_account": 999999999,
+  "gold_new_account": 999999999,
+  "silver_new_account": 999999999,
+  "vip_level_new_account": 15,
+  "free_shop": true,
+  "free_topup": true,
+  "topup_gives_jade": 99999999,
+  "official_api": "https://xnh5api.51haodong.com",
+  "official_cdn": "https://xnh5cdn.51haodong.com/en/resource/",
+  "local_resource_prefix": "/resource/",
+  "db_file": "ri.db",
+  "server_name": "PRIVATE-GRATIS-1",
+  "server_zone_id": 1,
+  "note_env": "Di VPS/Coolify set env: PUBLIC_HOST=domain-vps-kamu, PUBLIC_SCHEME=https, PORT=8080, WS_PORT=29601, DATA_DIR=/data"
+}

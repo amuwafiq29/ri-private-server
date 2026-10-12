@@ -1,0 +1,9 @@
+# Build / data lokal — jangan push
+_work/
+_work_apk/
+__pycache__/
+*.db
+*.apk
+*.xapk
+patched_client/
+ri-data/

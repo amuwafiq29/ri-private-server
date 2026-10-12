@@ -1,0 +1,19 @@
+services:
+  ri-private:
+    build: .
+    ports:
+      - "8080:8080"
+      - "29601:29601"
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-127.0.0.1}
+      PUBLIC_SCHEME: ${PUBLIC_SCHEME:-http}
+      PORT: 8080
+      WS_PORT: 29601
+      WS_PUBLIC_PORT: ${WS_PUBLIC_PORT:-29601}
+      DATA_DIR: /data
+    volumes:
+      - ri-data:/data
+    restart: unless-stopped
+
+volumes:
+  ri-data:
