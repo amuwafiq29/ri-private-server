@@ -9,12 +9,20 @@ Renegade Immortal 1.19 - Private Server Emulator
 
 Cara pakai: python server.py  (lalu buka http://127.0.0.1:8080/ )
 """
-import json, os, re, sqlite3, time, hashlib, threading, socket, base64
+import json, os, re, sqlite3, struct, time, hashlib, threading, socket, base64
 import urllib.request, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(BASE, "config.json"), encoding="utf-8"))
+try:
+    PROTO_SEND = {int(k): v for k, v in json.load(
+        open(os.path.join(BASE, "proto_send.json"), encoding="utf-8")).items()}
+    PROTO_RECV = {int(k): v for k, v in json.load(
+        open(os.path.join(BASE, "proto_recv.json"), encoding="utf-8")).items()}
+except Exception as e:
+    print(f"[PROTO] tabel tidak termuat: {e}")
+    PROTO_SEND, PROTO_RECV = {}, {}
 # HOST di config = alamat yang diiklankan ke client (di-override env PUBLIC_HOST di VPS).
 # Bind selalu 0.0.0.0 supaya bisa diakses dari emulator/HP/VPS, bukan cuma localhost.
 HOST = os.environ.get("PUBLIC_HOST", CFG.get("host", "127.0.0.1")).strip() or "127.0.0.1"
@@ -47,6 +55,9 @@ def db():
     c.execute("""CREATE TABLE IF NOT EXISTS shop_log(
       id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT, shop_id TEXT,
       count INTEGER, price INTEGER, ts INTEGER)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS roles(
+      uid TEXT PRIMARY KEY, rid INTEGER, name TEXT, career INTEGER,
+      sex INTEGER, lev INTEGER, reg_time INTEGER)""")
     return c
 
 def get_or_create(uid, token=""):
@@ -76,6 +87,251 @@ def add_jade(uid, amount):
     r = c.execute("SELECT jade FROM accounts WHERE uid=?", (uid,)).fetchone()
     c.close()
     return r[0] if r else amount
+
+def get_role(uid):
+    c = db()
+    r = c.execute("SELECT rid,name,career,sex,lev,reg_time FROM roles WHERE uid=?", (uid,)).fetchone()
+    c.close()
+    if not r:
+        return None
+    return {"rid": r[0], "name": r[1], "career": r[2], "sex": r[3], "lev": r[4], "reg_time": r[5]}
+
+def create_role(uid, name, career, sex):
+    c = db()
+    mx = c.execute("SELECT max(rid) FROM roles").fetchone()[0] or 100000
+    rid, now = mx + 1, int(time.time())
+    c.execute("INSERT OR REPLACE INTO roles(uid,rid,name,career,sex,lev,reg_time) VALUES(?,?,?,?,?,?,?)",
+              (uid, rid, name, career, sex, 1, now))
+    c.commit()
+    c.close()
+    return {"rid": rid, "name": name, "career": career, "sex": sex, "lev": 1, "reg_time": now}
+
+# ---------------- Protokol game biner (Egret, little-endian) ----------------
+# framing: uint32LE total(=payload+2) + uint16LE cmd + payload
+def _enc_val(t, v, buf):
+    if t in ("int8", "byte"):
+        buf += struct.pack("b", int(v))
+    elif t == "uint8":
+        buf += struct.pack("B", int(v))
+    elif t == "int16":
+        buf += struct.pack("<h", int(v))
+    elif t == "uint16":
+        buf += struct.pack("<H", int(v))
+    elif t == "int32":
+        buf += struct.pack("<i", int(v))
+    elif t == "uint32":
+        buf += struct.pack("<I", int(v) & 0xFFFFFFFF)
+    elif t == "int64":
+        v = int(v) & 0xFFFFFFFFFFFFFFFF
+        buf += struct.pack("<II", v & 0xFFFFFFFF, (v >> 32) & 0xFFFFFFFF)
+    elif t == "string":
+        b = str(v).encode("utf-8")[:65500]
+        buf += struct.pack("<H", len(b)) + b
+    elif t == "array":
+        raise ValueError("array perlu fields")
+    else:
+        raise ValueError(f"tipe tak dikenal: {t}")
+    return buf
+
+def proto_encode(schema, obj):
+    buf = bytearray()
+    for f in schema:
+        v = obj.get(f["name"])
+        if f["type"] == "array":
+            items = v or []
+            buf += struct.pack("<h", len(items))
+            for it in items:
+                sub = proto_encode(f["fields"], it)
+                buf += sub
+        else:
+            if v is None:
+                v = 0 if f["type"] != "string" else ""
+            buf = _enc_val(f["type"], v, buf)
+    return bytes(buf)
+
+class _R:
+    def __init__(self, data):
+        self.d, self.p = data, 0
+    def take(self, n):
+        if self.p + n > len(self.d):
+            raise ValueError("paket pendek")
+        b = self.d[self.p:self.p + n]
+        self.p += n
+        return b
+
+def proto_decode(schema, data):
+    r, out = _R(data), {}
+    for f in schema:
+        t = f["type"]
+        if t in ("int8", "byte"):
+            out[f["name"]] = struct.unpack("b", r.take(1))[0]
+        elif t == "uint8":
+            out[f["name"]] = struct.unpack("B", r.take(1))[0]
+        elif t == "int16":
+            out[f["name"]] = struct.unpack("<h", r.take(2))[0]
+        elif t == "uint16":
+            out[f["name"]] = struct.unpack("<H", r.take(2))[0]
+        elif t == "int32":
+            out[f["name"]] = struct.unpack("<i", r.take(4))[0]
+        elif t == "uint32":
+            out[f["name"]] = struct.unpack("<I", r.take(4))[0]
+        elif t == "int64":
+            lo, hi = struct.unpack("<II", r.take(8))
+            v = lo | (hi << 32)
+            out[f["name"]] = v - (1 << 64) if hi >= 0x80000000 else v
+        elif t == "string":
+            ln = struct.unpack("<H", r.take(2))[0]
+            out[f["name"]] = r.take(ln).decode("utf-8", errors="replace")
+        elif t == "array":
+            n = struct.unpack("<h", r.take(2))[0]
+            arr = []
+            for _ in range(max(0, n)):
+                sub, r.p = _decode_at(f["fields"], r.d, r.p)
+                arr.append(sub)
+            out[f["name"]] = arr
+    return out
+
+def _decode_at(schema, data, pos):
+    r = _R(data)
+    r.p = pos
+    out = {}
+    for f in schema:
+        t = f["type"]
+        if t in ("int8", "byte"):
+            out[f["name"]] = struct.unpack("b", r.take(1))[0]
+        elif t == "uint8":
+            out[f["name"]] = struct.unpack("B", r.take(1))[0]
+        elif t == "int16":
+            out[f["name"]] = struct.unpack("<h", r.take(2))[0]
+        elif t == "uint16":
+            out[f["name"]] = struct.unpack("<H", r.take(2))[0]
+        elif t == "int32":
+            out[f["name"]] = struct.unpack("<i", r.take(4))[0]
+        elif t == "uint32":
+            out[f["name"]] = struct.unpack("<I", r.take(4))[0]
+        elif t == "int64":
+            lo, hi = struct.unpack("<II", r.take(8))
+            v = lo | (hi << 32)
+            out[f["name"]] = v - (1 << 64) if hi >= 0x80000000 else v
+        elif t == "string":
+            ln = struct.unpack("<H", r.take(2))[0]
+            out[f["name"]] = r.take(ln).decode("utf-8", errors="replace")
+        elif t == "array":
+            n = struct.unpack("<h", r.take(2))[0]
+            arr = []
+            for _ in range(max(0, n)):
+                sub, r.p = _decode_at(f["fields"], r.d, r.p)
+                arr.append(sub)
+            out[f["name"]] = arr
+    return out, r.p
+
+def game_frame(cmd, payload: bytes) -> bytes:
+    return struct.pack("<IH", len(payload) + 2, cmd) + payload
+
+def zero_obj(schema):
+    o = {}
+    for f in schema:
+        if f["type"] == "array":
+            o[f["name"]] = []
+        elif f["type"] == "string":
+            o[f["name"]] = ""
+        else:
+            o[f["name"]] = 0
+    return o
+
+SUCCESS_FIELDS = {"code", "res", "result", "success", "status"}
+
+def role_info_obj(uid):
+    acc = get_or_create(uid)
+    r = get_role(uid) or {"rid": 100001, "name": "Hero", "career": 1, "sex": 1, "lev": 1, "reg_time": int(time.time())}
+    now = int(time.time())
+    base = {"rid": r["rid"], "name": r["name"], "zone_aid": 1, "zone_id": 1,
+            "reg_pf": "private", "career": r["career"], "realm": 1, "lev": r["lev"],
+            "sex": r["sex"], "map_id": 0, "map_base_id": 0, "xpos": 0, "ypos": 0,
+            "gold": acc["gold"], "gold_bind": acc["gold"], "coin": 999999999,
+            "coin_bind": 999999999, "charge": 0, "money": 999999999,
+            "exp": 0, "exp_max": 100, "vip_lev": acc["vip"], "vip_exp": 999999,
+            "guild_name": "", "guild_id": 0, "guild_job": 0, "guild_iden_name": "",
+            "every_day_charge": 0, "energy": 9999, "hero_soul": 999999,
+            "prestige": 999999, "exploit": 999999, "explore": 999999,
+            "contribution": 999999, "hero_exp": 0, "travel": 0, "artifact_soul": 999999,
+            "strategy": 0, "jade": acc["jade"], "call_score": 0, "call_score_max": 0,
+            "fc": 999999, "looks": [], "rename_cnt": 99, "province": "", "city": "",
+            "secret": 0, "devote_score": 0, "reg_time": r["reg_time"]}
+    if 12011 in PROTO_RECV:
+        full = zero_obj(PROTO_RECV[12011])
+        full.update({k: v for k, v in base.items() if k in full})
+        return full
+    return base
+
+def handle_game_packet(cmd, payload, sess):
+    """Kembalikan list bytes paket balasan (sudah di-frame)."""
+    out = []
+    def reply(rcmd, obj):
+        schema = PROTO_RECV.get(rcmd, [])
+        full = zero_obj(schema)
+        full.update({k: v for k, v in obj.items() if k in full})
+        out.append(game_frame(rcmd, proto_encode(schema, full)))
+    try:
+        schema = PROTO_SEND.get(cmd)
+        data = proto_decode(schema, payload) if schema else {"_raw": payload[:64].hex()}
+    except Exception as e:
+        print(f"[GAME] cmd {cmd}: decode gagal: {e}")
+        return out
+    brief = {k: (str(v)[:40]) for k, v in data.items() if not k.startswith("_")}
+    print(f"[GAME] C{cmd} {brief}")
+    now = int(time.time())
+    if cmd == 10000:  # login
+        uid = str(data.get("account") or "player1")
+        sess["uid"] = uid
+        get_or_create(uid)
+        r = get_role(uid)
+        roles = [{"rid": r["rid"], "name": r["name"], "career": r["career"],
+                  "sex": r["sex"], "lev": r["lev"], "reg_time": r["reg_time"]}] if r else []
+        reply(10000, {"code": 1, "msg": "", "roles": roles, "version": "1.0.81"})
+    elif cmd == 10002:  # daftar role
+        uid = sess.get("uid", "player1")
+        r = get_role(uid)
+        lst = [{"role_id": r["rid"], "role_name": r["name"], "career": r["career"],
+                "sex": r["sex"], "lev": r["lev"]}] if r else []
+        reply(10002, {"role_list": lst})
+    elif cmd == 10004:  # buat role
+        uid = sess.get("uid", "player1")
+        r = create_role(uid, str(data.get("name") or "Hero"),
+                        int(data.get("career") or 1), int(data.get("sex") or 1))
+        acc = get_or_create(uid)
+        reply(10004, {"code": 1, "id": r["rid"], "msg": "", "name": r["name"],
+                      "pf": "private", "zone_id": 1, "sex": r["sex"], "lev": 1,
+                      "vip_lev": acc["vip"], "gold": acc["gold"], "time": now,
+                      "source_share_rid": 0})
+    elif cmd == 10006:  # masuk game
+        reply(10006, {"code": 1, "msg": "", "timestamp": now, "world_lev": 1, "evolve_flag": 0})
+        uid = sess.get("uid", "player1")
+        reply(12011, role_info_obj(uid))  # info role + jade unlimited
+    elif cmd == 10007:  # re-enter
+        reply(10007, {"code": 1, "msg": "", "timestamp": now, "world_lev": 1, "evolve_flag": 0})
+    elif cmd == 10008:
+        reply(10008, {"res": 1})
+    elif cmd == 10010:
+        reply(10010, {"now": now})
+    elif cmd == 10012:
+        reply(10012, {"now": now, "open_time": now})
+    else:
+        rschema = PROTO_RECV.get(cmd)
+        if rschema is not None:
+            obj = zero_obj(rschema)
+            for f in rschema:
+                if f["name"] in SUCCESS_FIELDS and f["type"] in ("int8", "uint8", "int16", "uint16", "int32", "uint32"):
+                    obj[f["name"]] = 1
+            if "now" in obj:
+                obj["now"] = now
+            if "timestamp" in obj:
+                obj["timestamp"] = now
+            out.append(game_frame(cmd, proto_encode(rschema, obj)))
+            print(f"[GAME] C{cmd}: balasan generik (auto-nol)")
+        else:
+            print(f"[GAME] C{cmd}: tanpa skema, diabaikan")
+    return out
 
 # ---------------- HTTP ----------------
 GM_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>RI Private Server - GM Panel</title>
@@ -203,11 +459,14 @@ class H(BaseHTTPRequestHandler):
             conn = self.connection
             conn.settimeout(None)
             print(f"[WS-HTTP] client {self.client_address} tersambung via /ws")
-            ws_send(conn, unlimited_push())
+            sess, buf = {}, bytearray()
             while True:
                 op, data = ws_recv(conn)
                 if op == 0x8: break
-                handle_ws_message(conn, data, op, self.client_address)
+                if op == 0x9:
+                    ws_send(conn, data, opcode=0xA)
+                    continue
+                handle_ws_message(conn, data, op, self.client_address, sess, buf)
         except Exception as e:
             print(f"[WS-HTTP] {self.client_address} putus: {e}")
         finally:
@@ -303,47 +562,43 @@ def unlimited_push():
         "silver": SILVER_NEW, "vip": VIP_NEW, "msg": "PRIVATE SERVER: unlimited",
         "SCMD_18000": {"jade": JADE_NEW}, "price": 0}).encode()
 
-def handle_ws_message(conn, data, op, addr):
-    txt = ""
-    try: txt = data.decode(errors="ignore")
-    except Exception: pass
-    print(f"[WS {addr}] opcode={op} len={len(data)} data={txt[:400]!r} hex={data[:64].hex()}")
-    # heuristik: jika paket berisi kata shop/buy/pay/recharge/goods -> balas sukses gratis
-    low = txt.lower()
-    if any(k in low for k in ["buy", "shop", "pay", "recharge", "charge", "goods", "order", "jade", "yuanbao"]):
-        # paksa harga 0: ganti angka price jadi 0 di echo
-        mod = re.sub(r'"price"\s*:\s*\d+', '"price":0', txt) or txt
-        resp = json.dumps({"success": 1, "code": 1, "ok": True, "price": 0,
-            "msg": "GRATIS (private)", "jade": JADE_NEW, "echo": mod[:500]}).encode()
-        ws_send(conn, resp)
+def handle_ws_message(conn, data, op, addr, sess, buf):
+    if op == 0x1:  # teks (kompatibilitas lama / debug)
+        txt = data.decode(errors="ignore")
+        print(f"[WS {addr}] teks len={len(data)} {txt[:200]!r}")
         ws_send(conn, unlimited_push())
-    elif txt.strip().startswith("{"):
-        # JSON umum: echo sukses + unlimited
-        try:
-            o = json.loads(txt)
-            uid = str(o.get("uid") or o.get("account") or "player1")
-            acc = get_or_create(uid)
-            ws_send(conn, json.dumps({"success": 1, "ok": True, "price": 0,
-                "jade": acc["jade"], "gold": acc["gold"], "vip": acc["vip"], "echo_cmd": o.get("cmd")}).encode())
-        except Exception:
-            ws_send(conn, unlimited_push())
-    else:
-        # biner (protokol SCMD game): balas dengan push unlimited agar client tidak stuck,
-        # plus log untuk reverse engineering lanjutan (lihat console)
-        ws_send(conn, unlimited_push())
+        return
+    if op != 0x2:  # bukan biner/data: abaikan (ping/pong/close ditangani pemanggil)
+        return
+    buf += data
+    while len(buf) >= 6:
+        total, cmd = struct.unpack("<IH", buf[:6])
+        if total < 2 or total > 10 * 1024 * 1024:
+            print(f"[GAME {addr}] framing rusak total={total}, reset buffer")
+            buf.clear()
+            return
+        if len(buf) < 4 + total:
+            break  # tunggu sisa bytes
+        payload = bytes(buf[6:4 + total])
+        del buf[:4 + total]
+        for pkt in handle_game_packet(cmd, payload, sess):
+            ws_send(conn, pkt, opcode=0x2)
 
 def handle_ws(conn, addr):
+    sess, buf = {}, bytearray()
     try:
         req = conn.recv(4096).decode(errors="ignore")
         if "Upgrade" not in req and "upgrade" not in req:
             conn.close(); return
         ws_handshake(conn, req)
-        print(f"[WS] client {addr} tersambung (private server, jade unlimited)")
-        ws_send(conn, unlimited_push())
+        print(f"[WS] client {addr} tersambung (protokol game biner)")
         while True:
             op, data = ws_recv(conn)
             if op == 0x8: break
-            handle_ws_message(conn, data, op, addr)
+            if op == 0x9:  # ping -> pong
+                ws_send(conn, data, opcode=0xA)
+                continue
+            handle_ws_message(conn, data, op, addr, sess, buf)
     except Exception as e:
         print(f"[WS] {addr} putus: {e}")
     finally:
