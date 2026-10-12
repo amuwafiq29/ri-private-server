@@ -79,6 +79,8 @@ def db():
       items_json TEXT, PRIMARY KEY (uid, mid))""")
     c.execute("""CREATE TABLE IF NOT EXISTS formations(
       uid TEXT PRIMARY KEY, data_json TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS hangup(
+      uid TEXT PRIMARY KEY, cur_id INTEGER, last_time INTEGER)""")
     return c
 
 # Starter Team resmi (hero_data group 13 key 1) + item_data base_id asli
@@ -107,6 +109,40 @@ def get_heroes(uid):
                     "name": info[1], "lev": lev, "stage": 0, "star": star,
                     "fc": 5000, "hp": 8000, "hp_max": 8000, "skin_id": 0, "wake_lev": 0})
     return out
+
+def get_hangup(uid):
+    c = db()
+    r = c.execute("SELECT cur_id,last_time FROM hangup WHERE uid=?", (uid,)).fetchone()
+    if not r:
+        now = int(time.time())
+        c.execute("INSERT INTO hangup(uid,cur_id,last_time) VALUES(?,?,?)", (uid, 1, now))
+        c.commit()
+        r = (1, now)
+    c.close()
+    return {"cur_id": r[0], "last_time": r[1]}
+
+def set_hangup(uid, cur_id):
+    c = db()
+    c.execute("INSERT OR REPLACE INTO hangup(uid,cur_id,last_time) VALUES(?,?,?)",
+              (uid, cur_id, int(time.time())))
+    c.commit()
+    c.close()
+
+def level_up(uid, n=1):
+    c = db()
+    r = c.execute("SELECT lev FROM roles WHERE uid=?", (uid,)).fetchone()
+    if not r:
+        now = int(time.time())
+        c.execute("INSERT INTO roles(uid,rid,name,career,sex,lev,reg_time) VALUES(?,?,?,?,?,?,?)",
+                  (uid, 100001, "Hero", 1, 1, 1 + n, now))
+        c.commit()
+        c.close()
+        return 1 + n
+    c.execute("UPDATE roles SET lev=lev+? WHERE uid=?", (n, uid))
+    r = c.execute("SELECT lev FROM roles WHERE uid=?", (uid,)).fetchone()
+    c.commit()
+    c.close()
+    return r[0] if r else 1
 
 def get_bag(uid):
     c = db()
@@ -509,6 +545,56 @@ def handle_game_packet(cmd, payload, sess):
         c.close()
         reply(32803, {"res": 1, "msg": "", "action": int(data.get("action") or 0),
                       "my_signup": 0, "formation_list": fl})
+    elif cmd == 14101:  # info hangup/dream path: cur stage valid biar map render
+        uid = sess.get("uid", "player1")
+        hg = get_hangup(uid)
+        reply(14101, {"cur_id": hg["cur_id"], "reward_ids": [], "last_time": hg["last_time"],
+                      "max_minute": 480, "left_free_count": 5, "left_buy_count": 5,
+                      "is_active": 1, "next_cost": 0,
+                      "chapter_ids": [{"chapter_id": 1}], "need_to_active": 0,
+                      "pass_all": 0, "is_activity_open": 1, "reward_all": 0,
+                      "ids": [], "show_new_task": 0})
+    elif cmd == 14102:  # challenge stage: selalu menang, maju + naik level
+        uid = sess.get("uid", "player1")
+        hg = get_hangup(uid)
+        new_id = hg["cur_id"] + 1
+        set_hangup(uid, new_id)
+        level_up(uid, 1)
+        gained = [bag_add(uid, 1, 200), bag_add(uid, 4, 2000), bag_add(uid, 1000080, 3)]
+        add_jade(uid, 50)
+        reply(14102, {"res": 1, "msg": "", "next_id": new_id, "pass_all": 0})
+        drops = [{"base_id": 1, "bind": 1, "num": 200},
+                 {"base_id": 4, "bind": 1, "num": 2000},
+                 {"base_id": 1000080, "bind": 1, "num": 3}]
+        reply(14106, {"list": drops, "res": 1, "type": 0})
+        reply(17001, {"notice": 1, "storagetype": 0, "items": gained})
+        reply(12011, role_info_obj(uid))
+        hg2 = get_hangup(uid)
+        reply(14101, {"cur_id": hg2["cur_id"], "reward_ids": [], "last_time": hg2["last_time"],
+                      "max_minute": 480, "left_free_count": 5, "left_buy_count": 5,
+                      "is_active": 1, "next_cost": 0,
+                      "chapter_ids": [{"chapter_id": 1}], "need_to_active": 0,
+                      "pass_all": 0, "is_activity_open": 1, "reward_all": 0,
+                      "ids": [], "show_new_task": 0})
+    elif cmd == 14103:  # klaim AFK
+        uid = sess.get("uid", "player1")
+        gained = [bag_add(uid, 1, 200), bag_add(uid, 4, 500)]
+        reply(14103, {"res": 1, "msg": "", "last_time": int(time.time())})
+        reply(14106, {"list": [{"base_id": 1, "bind": 1, "num": 200},
+                               {"base_id": 4, "bind": 1, "num": 500}],
+                      "res": 1, "type": 0})
+        reply(17001, {"notice": 1, "storagetype": 0, "items": gained})
+        c = db()
+        c.execute("UPDATE hangup SET last_time=? WHERE uid=?", (int(time.time()), uid))
+        c.commit()
+        c.close()
+    elif cmd == 14104:  # klaim reward stage
+        reply(14104, {"res": 1, "msg": "", "id": int(data.get("id") or 0), "reward_all": 0})
+    elif cmd == 14108:  # challenge chapter
+        uid = sess.get("uid", "player1")
+        hg = get_hangup(uid)
+        reply(14108, {"res": 1, "msg": "", "chapter_id": int(data.get("chapter_id") or 1),
+                      "next_id": hg["cur_id"]})
     else:
         rschema = PROTO_RECV.get(cmd)
         if rschema is not None:
